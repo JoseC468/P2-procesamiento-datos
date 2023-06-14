@@ -1,0 +1,859 @@
+---
+title: "Practica 2"
+author: "Félix Mucha & Jose Enriquez"
+date: "2023-06-11"
+output:
+  pdf_document:
+    highlight: zenburn
+    toc: yes
+  html_document:
+    highlight: default
+    number_sections: yes
+    theme: cosmo
+    toc: yes
+    toc_depth: 2
+    includes:
+      in_header: Pra02_header.html
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Descripción del dataset
+
+El dataset contiene información de venta de departamentos de la ciudad de Buenos Aires, dicha información nos va a permitir realizar análisis, investigación, predicción y toma de decisiones para la selección del mejor inmueble. Las variables del dataset son:
+
++ created_on: fecha de publicación de aviso
++ operation: operación de venta
++ property_type: tipo de propiedad
++ place_with_parent_names: lugar de la propiedad
++ lat.lon: Latitud y longitud
++ lat: Latitud
++ lon: Longitud
++ price_aprox_usd: Precio aprox en usd
++ surface_total_in_m2: superficie_total_en_m2
++ surface_covered_in_m2: superficie_cubierta_en_m2
++ price_usd_per_m2: precio_usd_por_m2
++ floor: piso
++ rooms: habitaciones
++ expenses: gastos
++ properati_url: URL_propiedad
++ barrio: barrio
++ comuna: comuna
+
+Origende datos Kaggle ( https://www.kaggle.com/datasets/gastonmichelotti/properati-data-set ).
+
+Con esta información buscamos detectar las comunas que presentan un alto precio aproximado ($) de los inmuebles. Esto nos va a permitir generar y tomar decisiones basadas en el comportamiento de los inmuebles a nivel georáfico y la influencia del número de habitaciones en los precios. Además, evaluar si existe alguna variación de los precios con respecto al m2. Asimismo, buscamos ajustar un modelo de regresión lineal que nos permita predecir los precios aprox. de los inmuebles. 
+
+**Objetivo**
+
+- Determinar si el modelo de regresión lineal múltiple es el adecuado para predecir los precios aproximados de los inmuebles.
+- Determinar los puntos geográficos de los inmuebles de mayor ínteres.
+
+
+```{r include=FALSE,warning=FALSE, error=FALSE, message=FALSE}
+# Librerias
+if (!require("dplyr")) install.packages("dplyr"); library("dplyr")
+if (!require("ggplot2")) install.packages("ggplot2"); library("ggplot2")
+if (!require('colorspace')) install.packages('colorspace'); library('colorspace')
+if (!require('grid')) install.packages('grid'); library('grid')
+if (!require('VIM')) install.packages('VIM'); library('VIM')
+if (!require('kknn')) install.packages('kknn'); library('kknn')
+if (!require('class')) install.packages('class'); library('class')
+if (!require('mapdata')) install.packages('mapdata'); library('mapdata')
+if (!require('maps')) install.packages('maps'); library('maps')
+if (!require('ggrepel')) install.packages('ggrepel'); library('ggrepel')
+if (!require('ggthemes')) install.packages('ggthemes'); library('ggthemes')
+if (!require('sf')) install.packages('sf'); library('sf')
+library(nortest)
+library(tidyverse)
+library(lmtest)
+```
+
+## Carga de datos 
+
+```{r}
+# Carga de datos
+data <- read.csv("../data/datos_properati.csv", stringsAsFactors = FALSE, encoding='utf-8')
+
+# Revisión de las variables 
+names(data)
+```
+
+La data está compuesta por 17 variables y 18 979 registros de diferentes inmuebles en la ciudad de Buenos Aires. 
+
+# Integración y selección
+
+Para el caso de estudio conservaremos la mayoría de las variables, para realizar el análisis respectivo. Entre las variables que se van a retirar tenemos la *operation*, *place_with_parent_names* y la *properati_url*. La variable *operation* esta compuesta por una sola categoría, lo cuál no aporta información relevante. Asimismo, la variable *place_with_parent_names* a pesar de mostrar la ubicación de los inmuebles tenemos la latitud y longitud para tener la ubicación más precisa de los inmuebles, además tenemos información del *barrio* y la *comuna* para brindar mayor información a la ubicación. Luego de la selección de variables, analizaremos el tipo de dato de cada variable. 
+
+```{r echo=FALSE}
+# Selección de variables 
+datos <- dplyr::select(data, -operation, -place_with_parent_names)
+
+# Tipo de datos
+sapply(datos, class)
+```
+
+Con respecto al tipo de dato, tenemos que convertir *created_on* en formato fecha. Además, es necesario convertir a factor las variables *property_type*, *rooms*, *barrio* y *comuna*. Por otro lado, dejaremos la variable *lat.lon* como un tipo de character.
+
+```{r echo=FALSE}
+datos$created_on <- as.Date(datos$created_on)
+datos$property_type <- as.factor(datos$property_type)
+datos$barrio <- as.factor(datos$barrio)
+datos$comuna <- as.factor(datos$comuna)
+datos$rooms <- as.integer(datos$rooms)
+
+# Tipo de datos
+sapply(datos, class)
+```
+
+De este resumen estadístico podemos obtener información relevante de cada variable, dependiento del tipo de variable. Además, nos permite apreciar el comportamiento de las variables numéricas con respecto a la media y sus valores extremos. De la misma forma, podemos detectar posibles comportamientos anómalos como la variable *floor* que hay un inmueble con 904 pisos, para validar la información es necesario usar el *properati_url*.
+
+# Limpieza de los datos
+
+Lo primero que realizaremos es calcular el procentaje de nulos que existen por cada variable de interes del análisis.
+
+```{r include=FALSE}
+# Función para calcular el porcentaje de nulos por columna
+calcular_porcentaje_nulos <- function(df) {
+  # Calcula el número total de filas en el dataframe
+  total_filas <- nrow(df)
+  
+  # Calcula el porcentaje de nulos por columna
+  porcentaje_nulos <- df %>%
+    summarise_all(~ sum(is.na(.)) / total_filas * 100)
+  
+  return(porcentaje_nulos)
+}
+```
+
+```{r }
+#calculando el procentaje de nulos por columna
+porcentaje_nulos <- calcular_porcentaje_nulos(datos)
+porcentaje_nulos
+```
+
+Nos vamos a enfocarnos sólo en la venta de departamentos para tener datos comparables e imputables.
+
+```{r }
+# Filtramos solo departamentos
+Dpto <- filter(datos, property_type == 'apartment')
+
+porc_null_dpto <- calcular_porcentaje_nulos(Dpto)
+porc_null_dpto
+```
+
+De la proporción podemos ver que en las variables *floor* y *expenses*, la proporción de nulos es muy elevada (null > 70%). Por este motivo, estás variables serán retiradas del análisis. Asimismo, se retirará *property_type* ya que solo trabajaremos con la categoría **apartmet**
+
+```{r}
+# Eliminación de variables
+dfDpto <- select(Dpto, -floor, -expenses, -property_type)
+
+# Nueva proporción de nulos
+calcular_porcentaje_nulos(dfDpto)
+```
+
+Observamos que una variable importante es el número de habitaciones se obsera que hay 22.5% de nulos para el análisis no vamos a considerar los nulos.
+
+```{r }
+# Filtra los valores no nulos
+dfDptoNN <- dfDpto %>% filter(complete.cases(.))
+
+porc_null_dptoN <- calcular_porcentaje_nulos(dfDptoNN)
+porc_null_dptoN
+```
+
+La variable *surface_total_in_m2* y *surface_covered_in_m2* estan relacionados. Esto se debe a que en teoría la superficie total (m2) es mayor a la superficie cubierta (m2). Por ello, validaremos que se cumpla este requisito.
+
+```{r}
+# Validación del requisito
+dfDptoNN$val <- dfDptoNN$surface_total_in_m2 >= dfDptoNN$surface_covered_in_m2
+dfDptoNN <- dfDptoNN[dfDptoNN$val == 'TRUE',]
+dfDptoNN <- select(dfDptoNN, -val)
+```
+
+La variable *surface_total_in_m2* será limitada a trabajar solo con los departamentos inferiores a los 200 m2 y que los precios por m2 sean inferiores a 6000$.
+
+```{r}
+# Filtro de datos
+dfDptoN <- dfDptoNN[(dfDptoNN$surface_total_in_m2 <= 200) & (dfDptoNN$price_usd_per_m2 <= 6000),]
+```
+
+```{r include=FALSE}
+dfDptoN$barrio <- as.factor(as.character(dfDptoN$barrio))
+dfDptoN$comuna <- factor(as.character(dfDptoN$comuna), levels = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15))
+```
+
+A continuación, analizaremos el comportamiento de la variable *rooms*.
+
+```{r echo=FALSE}
+# Distribución numérica de la variable rooms
+table(dfDptoN$rooms)
+```
+
+De los siguientes resultados obtenidos, llegamos a la conclusión de que es necesario agrupar los valores mayor a 6 habitaciones para continuar trabajando correctamente.  
+
+```{r}
+# Agrupación de valores
+dfDptoN$rooms <- ifelse(dfDptoN$rooms < 6, dfDptoN$rooms, 6)
+```
+
+
+```{r include=FALSE}
+grafico_mix <- function(datos, variable, titulo, col_his, breaks, col_line_density, 
+                        col_caja, col_bigote, col_border){
+  par(mfrow = c(1, 1))
+  # Histograma
+  h <- hist(datos, probability = TRUE, ylab = "", col = col_his, xlab = variable, 
+            xlim = c(min(datos, na.rm = T),max(datos, na.rm = T)), 
+            include.lowest = TRUE, xaxt = "n", axes = FALSE, main = titulo, 
+            breaks = seq(min(datos, na.rm = T),max(datos, na.rm = T),
+                         by=(max(datos, na.rm = T)-min(datos, na.rm = T))/breaks))
+
+  # Eje
+  axis(1, at = round(seq(min(datos, na.rm = T),max(datos, na.rm = T),
+                         by=(max(datos, na.rm = T)-min(datos, na.rm = T))/breaks),2))
+
+  
+  # Densidad
+  lines(density(na.omit(datos)), col = col_line_density, lwd = 2)
+  
+  # Boxplot
+  par(new = TRUE)
+  graph_caja <- boxplot(datos, horizontal = TRUE, axes = FALSE, border = col_border,
+          lwd = 1, col = col_caja, whiskcol = col_bigote, na.action = F)
+}
+```
+
+En los gráficos siguientes analizaremos el comportamiento de las variables y la existencia de observaciones atípicas. Así como también analizaremos si las variables presentan una distribución simétrica o asimétrica.  
+
+```{r fig.width=8, fig.height=4, echo=FALSE}
+# price_usd_per_m2
+grafico_mix(datos = dfDptoN$price_usd_per_m2, variable = "price_usd_per_m2", titulo = "", 
+            col_his = adjustcolor(col = "#F5762E", alpha.f = 0.5), 
+            breaks = 15, col_line_density = "#F57F51", 
+            col_caja = adjustcolor(col = "#B1F0E5", alpha.f = 0.5), 
+            col_bigote = "#46A897", col_border = "#46A897")
+```
+
+Del gráfico, podemos apreciar la existencia de observaciones con un comportamiento atípico, estas observaciones se encuentran situados en la cola izquierda, ya que, el precio por m2 están por debajo de límite inferior ($802). Asimismo, la distribución de los datos tienden a ser simérticos con respecto a la mediana (mediana: 2641.65), pero la existencia de observaciones distorcionan su comportamiento. Por este motivo, es necesario realizar el gráfico *qqplot* y la prueba de *Anderson Darling* para analizar si el comportamiento de los datos se ajustan a una distribución normal. 
+
+```{r fig.width=8, fig.height=4, echo=FALSE}
+# price_aprox_usd
+grafico_mix(datos = dfDptoN$price_aprox_usd, variable = "price_aprox_usd", titulo = "", 
+            col_his = adjustcolor(col = "#F5762E", alpha.f = 0.5), 
+            breaks = 15, col_line_density = "#F57F51", 
+            col_caja = adjustcolor(col = "#B1F0E5", alpha.f = 0.5), 
+            col_bigote = "#46A897", col_border = "#46A897")
+```
+
+En el siguiente gráfico, podemos observar la existencia de observaciones con un comportamiento atípico, estas observaciones se encuentran situados a la derecha del diagrama de cajas, ya que, el precio aproximado están por encima del límite superior ($399408). Asimismo, la distribución de los datos tienden a ser asimérticos, ya que la mayor concentración de datos se encuentran entre los 5043 y los 251521. Asimismo, se puede apreciar que la diferencia entre los valores de la media y mediana son grandes (media: 187491; mediana: 159000). Es así que los comportamientos anómalos distorcionan la distribución de los datos. 
+
+```{r fig.width=8, fig.height=4, echo=FALSE}
+# surface_covered_in_m2
+grafico_mix(datos = dfDptoN$surface_covered_in_m2, variable = "surface_covered_in_m2", titulo = "", 
+            col_his = adjustcolor(col = "#F5762E", alpha.f = 0.5), 
+            breaks = 15, col_line_density = "#F57F51", 
+            col_caja = adjustcolor(col = "#B1F0E5", alpha.f = 0.5), 
+            col_bigote = "#46A897", col_border = "#46A897")
+```
+
+Con respecto al gráfico de la superficie cubierta (m2), podemos observar la existencia de observaciones con un comportamiento atípico, estas observaciones se encuentran situados a la derecha del diagrama de cajas, ya que, la superficie cubierta está por encima del límite superior (159 m2). Asimismo, la distribución de los datos tienden a ser asimérticos, ya que la mayor concentración de datos se encuentran entre los 16 m2 y los 81 m2. Asimismo, se puede apreciar que la diferencia entre los valores de la media y mediana son grandes (media: 56 m2; mediana: 67 m2). Es así que los comportamientos anómalos distorcionan la distribución de los datos. 
+
+```{r fig.width=8, fig.height=4, echo=FALSE}
+# surface_total_in_m2
+grafico_mix(datos = dfDptoN$surface_total_in_m2, variable = "surface_total_in_m2", titulo = "", 
+            col_his = adjustcolor(col = "#F5762E", alpha.f = 0.5), 
+            breaks = 15, col_line_density = "#F57F51", 
+            col_caja = adjustcolor(col = "#B1F0E5", alpha.f = 0.5), 
+            col_bigote = "#46A897", col_border = "#46A897")
+```
+
+Por último, el gráfico de la superficie total (m2), esta muy correlacionado con el comportamiento la superficie cubierta (m2). Por este motivo, es que la distribución y la existencia de datos anómalos son similares al de la gráfica anterior. 
+
+**Analizamos la evolución de los precios, en función al número de habitaciones:**
+
+En este primer análisis, evaluaremos el comportamiento de los precios en función al número de habitaciones. 
+
+```{r warning=FALSE, error=FALSE, message=FALSE, fig.width=8, fig.height=3, echo=FALSE}
+# price_aprox_usd
+ggplot(data = dfDptoN, aes(x = factor(rooms), y = price_aprox_usd)) +
+       stat_boxplot(geom = "errorbar", # Bigotes
+                    width = 0.2) +
+       geom_boxplot(fill = "#4271AE", colour = "#1F3552", # Colores
+                    alpha = 0.9, outlier.colour = "red") +
+       scale_y_continuous(name = "price_aprox_usd") +  # Etiqueta de la variable continua
+       scale_x_discrete(name = "rooms") +        # Etiqueta de los grupos
+       theme(axis.line = element_line(colour = "black", size = 0.25))
+```
+
+En este primer gráfico, podemos observar que a mayor número de habitaciones la media de los precios estimados de un inmueble tienden a elevarse. Asimismo, si el inmueble cuenta con 5 o más habitaciones la media del precio estimado está por encima de los $350 000. Además, si los inmuebles cuentan con 5 o más habitaciones, la variación del precio es mínima. Con esto quiero decir, si un inmueble cuenta con más de 5 habitaciones, el precio es definido por otros factores. 
+
+Por otro lado, existen inmuebles que tienen un menor número de habitaciones y el precio aproximado esta muy por encima de la media de los precios. Es así que se puede conlcuir que el precio de estos inmuebles están definidos por otros factores como la ubicación geografica.   
+
+## Revisión de la distribución de los datos
+
+```{r fig.width=10, fig.height=4, echo=FALSE}
+par(mfrow=c(1,4))
+# price_usd_per_m2
+qqnorm(dfDptoN[,8],main = paste("Normal Q-Q Plot for\n",colnames(dfDptoN)[8]), col = 'steelblue')
+qqline(dfDptoN[,8],col="red")
+text(-2, 5000, paste("AD: p-value = ", format(ad.test(dfDptoN$price_usd_per_m2)$p.value, scientific = T)), col = "#000000", cex = 0.7)
+
+# price_aprox_usd 
+qqnorm(dfDptoN[,5],main = paste("Normal Q-Q Plot for\n",colnames(dfDptoN)[5]), col = 'steelblue')
+qqline(dfDptoN[,5],col="red")
+text(-2, 1000000, paste("AD: p-value = ", format(ad.test(dfDptoN$price_aprox_usd)$p.value, scientific = T)), col = "#000000", cex = 0.7)
+
+# surface_covered_in_m2
+qqnorm(dfDptoN[,7],main = paste("Normal Q-Q Plot for\n",colnames(dfDptoN)[7]), col = 'steelblue')
+qqline(dfDptoN[,7],col="red")
+text(-2, 175, paste("AD: p-value = ", format(ad.test(dfDptoN$surface_covered_in_m2)$p.value, scientific = T)), col = "#000000", cex = 0.7)
+
+# surface_total_in_m2
+qqnorm(dfDptoN[,6],main = paste("Normal Q-Q Plot for\n",colnames(dfDptoN)[6]), col = 'steelblue')
+qqline(dfDptoN[,6],col="red")
+text(-2, 170, paste("AD: p-value = ", format(ad.test(dfDptoN$surface_total_in_m2)$p.value, scientific = T)), col = "#000000", cex = 0.7)
+```
+
+El test nos indica que ninguna de las variables se ajusta a una distribución normal, ya que el p-valor es inferior al coeficiente 0.05, por lo que hay suficiente evidencia estadística para rechazar la hipotesis nula y esto da a entender que los datos no se ajusta a una distribución normal.
+
+**Analizamos la evolución de los precios, en función a las comunas:**
+
+```{r fig.width=8, fig.height=3, include=FALSE}
+# En la capital de Argentina, Buenos Aires existe 15 comunas que agrupan a los barrios
+
+dfDptoG <- dfDptoN %>%  group_by(comuna) 
+
+grpdfDpto <- dfDptoG %>% summarise(mPrice = mean(price_aprox_usd), 
+                                   mArea_m2 = mean(surface_total_in_m2), 
+                                   mAreaCons = mean(surface_covered_in_m2), 
+                                   mprice_m2 = mean(price_usd_per_m2),
+                                   mhab = mean(rooms) )
+```
+
+```{r fig.width=8, fig.height=4.5, echo=FALSE}
+#mprice_m2
+grafMpC <- ggplot(grpdfDpto, aes(x = comuna, y = mprice_m2, fill = comuna)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = round(mprice_m2,1) ), vjust = -0.5) +
+  labs(title = "Media de costo $ por metro cuadro por Comunas", 
+       x = "Comuna", y = "Media de Área de Dpto") +
+  theme_minimal() +
+  geom_line(aes(y = mprice_m2, group = 1), color = "red", linetype = "dashed") +
+  geom_point(aes(y = mprice_m2), color = "red") +  
+  theme(axis.text = element_text(color = "slateblue",
+                                 size = 6, angle = 0))
+grafMpC
+```
+
+**Analizamos el comportamiento del precio por m2, en las comunas**
+
+```{r fig.width=8, fig.height=3, echo=FALSE}
+ggplot(data = dfDptoN, aes(x = factor(comuna), y = price_usd_per_m2)) +
+       stat_boxplot(geom = "errorbar", # Bigotes
+                    width = 0.2) +
+       geom_boxplot(fill = "#4271AE", colour = "#1F3552", # Colores
+                    alpha = 0.9, outlier.colour = "red") +
+       scale_y_continuous(name = "price_usd_per_m2") +  # Etiqueta de la variable continua
+       scale_x_discrete(name = "comuna") +        # Etiqueta de los grupos
+       theme(axis.line = element_line(colour = "black", size = 0.25))
+
+```
+
+Del siguiente gráfico, podemos concluir que la comuna 2, 14 y considerando la comuna 13 tienen los precios más elevados, ya que la media de los precios por m2 están por encima de los $3000. Por otro lado, se puede apreciar que la comuna 8 tiene los inmuebles con el menor precio por m2. Asimismo, la mayoría de las comunas tiene una media de precio por m2 que se encuentran entre los 2000 usd y 3000 usd.  
+
+**Analizamos el comportamiento de la superficie total (m2), en las comunas**
+
+```{r fig.width=8, fig.height=3, echo=FALSE}
+ggplot(data = dfDptoN, aes(x = factor(comuna), y = surface_total_in_m2)) +
+       stat_boxplot(geom = "errorbar", # Bigotes
+                    width = 0.2) +
+       geom_boxplot(fill = "#4271AE", colour = "#1F3552", # Colores
+                    alpha = 0.9, outlier.colour = "red") +
+       scale_y_continuous(name = "surface_total_in_m2") +  # Etiqueta de la variable continua
+       scale_x_discrete(name = "comuna") +        # Etiqueta de los grupos
+       theme(axis.line = element_line(colour = "black", size = 0.25))
+```
+
+
+Los datos atípicos los vamos a sustituir con nulos para luego, imputarlos por valores más reales en la sigueinte sección.
+
+```{r}
+# Replicamos la data 
+dfDptoNN <- dfDptoN
+
+# Trataremos los valores atípicos
+quantiles <- quantile(dfDptoNN$price_aprox_usd, c(0.05, 0.95), na.rm = TRUE)
+dfDptoNN[dfDptoNN$price_aprox_usd>quantiles[2], "price_aprox_usd"]<-NA
+summary(dfDptoNN$price_aprox_usd)
+```
+
+Luego de imputar los valores atípicos observamos el resumen para ver efectivamente que se realizo la imputación.
+
+```{r }
+quantiles <- quantile(dfDptoNN$surface_total_in_m2, c(0.05, 0.95), na.rm = TRUE)
+dfDptoNN[dfDptoNN$surface_total_in_m2>quantiles[2], "surface_total_in_m2"]<-NA
+summary(dfDptoNN$surface_total_in_m2)
+
+```
+
+```{r }
+
+quantiles <- quantile(dfDptoNN$price_usd_per_m2, c(0.05, 0.95), na.rm = TRUE)
+dfDptoNN[dfDptoNN$price_usd_per_m2>quantiles[2], "price_usd_per_m2"]<-NA
+summary(dfDptoNN$price_usd_per_m2)
+
+```
+
+## Imputación de datos
+
+Normalización de datos.- Se crea una función para normalizar las variables de la información de los inmubeles que estamos analizando.
+
+```{r echo=FALSE}
+normalize1 <-function(x) { (x -min(na.omit(x)))/(max(na.omit(x))-min(na.omit(x)) ) }
+
+##Corremos la normalización para los valores númericos para poder predecir
+dfDptoNN_sna <- na.omit(dfDptoNN)
+dfDptoNN_norm <- as.data.frame(lapply(dfDptoNN_sna[,c(5:8)], normalize1))
+head(dfDptoNN_norm, 3)
+```
+
+Creamos un modelo de entranamiento y testeo.
+
+```{r include=FALSE}
+# data de entranamiento y testeo
+
+##Generate a random number that is 80% of the total number of rows in dataset.
+data_split <- sample(1:nrow(dfDptoNN_norm), 0.8 * nrow(dfDptoNN_norm))
+
+##extract training set
+train <- dfDptoNN_norm[data_split,]
+
+##extract testing set
+test <- dfDptoNN_norm[-data_split,]
+
+#price_aprox_usd 8 surface_total_in_m2 9 price_usd_per_m2 11  
+##extract 8vo columna del train dataset porque es usado 'price_aprox_usd' argumento de la función knn.
+target_category <- dfDptoNN_sna[data_split,5]
+##extract 8vo columna  para test_category
+test_category <- dfDptoNN_sna[-data_split,5]
+
+# Haciendo las predicciones
+##run knn function
+test_pred <- knn(train,test,cl=target_category,k=10)
+
+df_pred=data.frame(test_category,test_pred)
+
+```
+
+En la siguiente reusmen podremos observar los valores reales y los que han predecidos con el modelo.
+
+```{r include=FALSE}
+table <- table(test_category,test_pred)
+```
+
+Antes de realizar impuatción de valores observaremos un resumen de los datos a imoputar.
+
+```{r echo=FALSE, fig.width=8, fig.height=3}
+# Tomaremos la función KNN de VMI
+missing_plot <- aggr( dfDptoNN[,c(5:8)], col = c('navyblue','yellow'),
+                      number=TRUE, sortVars = TRUE,
+                      labels=names(dfDptoNN[,c(5:8)]), cex.axis=0.7,
+                      gap=4, ylab=c("Nulos en la Data", "Data Total"))
+```
+
+Este gráfico nos muestra que el 89% de la información no tien nulos, lo cuál nos favorece porque estamos trabajando con información buena.
+
+```{r fig.width=8, fig.height=3, include=FALSE}
+# price_aprox_usd 8 surface_total_in_m2 9 price_usd_per_m2 11  expenses
+input_data<-kNN(dfDptoNN, variable = c("price_aprox_usd", "surface_total_in_m2", "price_usd_per_m2"), k=11)
+
+# surface_total_in_m2
+grafico_mix(datos = input_data$surface_total_in_m2, variable = "surface_total_in_m2", titulo = "", 
+            col_his = adjustcolor(col = "#F5762E", alpha.f = 0.5), 
+            breaks = 15, col_line_density = "#F57F51", 
+            col_caja = adjustcolor(col = "#B1F0E5", alpha.f = 0.5), 
+            col_bigote = "#46A897", col_border = "#46A897")
+```
+
+# Análisis 
+
+En el análisis evaluaremos los datos para poder realizar un modelamiento predictivo, en la estimación del precio aproximado ($). En un primer avance seleccionaremos las posibles variables que expliquen la variación de los precios. 
+
+```{r include=FALSE}
+# Selección de variables para el modelamiento predictivo.
+input_data_mapa <- input_data %>% drop_na()
+
+# Graficamos indicando 
+input_data_mapa$long <- input_data_mapa$lon
+input_data_mapa$rooms <- as.integer(input_data_mapa$rooms)
+```
+
+
+```{r}
+df_model <- dplyr::select(input_data_mapa, -created_on, -lat.lon, -lat, -lon, 
+              -properati_url, -price_aprox_usd_imp, -surface_total_in_m2_imp,
+              -price_usd_per_m2_imp, -long)
+head(df_model, 3)
+```
+
+A continuación, examinaremos la correlación entre las variables, esto nos va a permitir identificar variables que puedan elevar la colinealidad entre variables. 
+
+```{r }
+# Analizaremos la coorelación de variables
+correlacion <- round(cor(df_model[,c('price_aprox_usd', 'surface_total_in_m2', 'surface_covered_in_m2', 'price_usd_per_m2', 'rooms')]),3)
+```
+
+```{r echo=FALSE, fig.width=8, fig.height=4}
+corrplot::corrplot(correlacion, method = 'circle', type = 'lower', insig='blank',
+         addCoef.col ='black', number.cex = 0.8,diag=T, tl.srt = 15,)
+```
+
+De la siguiente tabla podemos ver que la superficie total (m2) y la superficie cubierta por los usuarios (m2) están correlacionados linealmente en un 93%, es por ello, que la suérficie cubierta será retirada del análisis. Asimismo, el número de habitaciones presenta una alta correlación lineal positiva con la supericie total (m2) y la superficie cubierta (m2) en un 80% y 81%, respectivamente. Por ello, el número de habitaciones será retirada del análisis. 
+
+```{r}
+# Eliminación de variables correlacionadas
+df_modelc <- dplyr::select(df_model, -rooms, -surface_covered_in_m2)
+head(df_modelc, 3)
+```
+
+Ahora veremos las categorías de las variables de tipo cualitativas. 
+
+```{r fig.width=8, fig.height=3, include=FALSE}
+# Analizamos la frecuencia de las categorias de la variable barrio
+g_barrio <- data.frame(df_modelc %>% group_by(barrio) %>% summarise(n = n()) %>% arrange(desc(n)))
+
+# graficamos
+ggplot(g_barrio, aes(x=reorder(barrio, n), y=n)) + 
+  geom_bar(stat = "identity") +
+  labs(x = "Barrio", y = "freq") +
+  coord_flip() 
+```
+
+Como se puede mostrar en la gráfica, es necesario agrupar categorías, con el objetivo de reducir el número de categorías en las variables y además de tener categorías más consistentes. ya que hay barrios que registran 9 o 4 inmuebles. Es por ello, que es preferible reducir as categorías. Graficamente podemos asignar el punto de corte de 300, este valor referencial nos va a permitir agrupar todas las categorías que se encuentren por debajo de los 300. A este grupo se le denominará como otro. 
+
+```{r fig.width=8, fig.height=3, include=FALSE}
+# Sacamos las categorías que son inferiores a los 300
+name_b_otro = c()
+for (i in g_barrio[g_barrio$n <= 300,1]) {
+  name_b_otro <- append(name_b_otro, i)
+}
+name_b_otro
+```
+
+Luego, reemplazamos dichas categorías como *OTRO* barrio.
+
+```{r}
+# Reemplazamo la categoría 
+df_modelc$n_barrio <- df_modelc$barrio
+df_modelc$n_barrio <- as.character(df_modelc$n_barrio)
+df_modelc['n_barrio'] <- lapply(df_modelc['n_barrio'], function(x) replace(x,x %in% name_b_otro, 'OTRO'))
+```
+
+Finalmente, las nuevas categorías de la variable n_barrio quedan clasificadas correctamente. 
+
+```{r fig.width=8, fig.height=3, echo=FALSE}
+# Analizamos la frecuencia de las nuevas categorias de la variable n_barrio
+g_barrion <- data.frame(df_modelc %>% group_by(n_barrio) %>% summarise(n = n()) %>% arrange(desc(n)))
+
+# graficamos
+ggplot(g_barrion, aes(x=reorder(n_barrio, n), y=n)) + 
+  geom_bar(stat = "identity") +
+  labs(x = "Barrio", y = "freq") +
+  coord_flip() 
+```
+
+Replicaremos el mismo procedimiento con la comuna. 
+
+```{r fig.width=8, fig.height=3, include=FALSE}
+g_comuna <- df_modelc %>% group_by(comuna) %>% summarise(n = n())
+
+ggplot(g_comuna, aes(x=reorder(comuna, n), y=n)) + 
+  geom_bar(stat = "identity") +
+  labs(x = "Barrio", y = "freq") +
+  coord_flip() 
+```
+
+En este caso el punto de referencial para el corte es de 550.
+
+```{r include=FALSE}
+# Sacamos las categorías que son inferiores a los 550
+name_c_otro = c()
+for (i in g_comuna[g_comuna$n <= 550,1]) {
+  name_c_otro <- append(name_c_otro, i)
+}
+name_c_otro
+```
+
+Luego, reemplazamos dichas categorías como *OTRO* comuna.
+
+```{r}
+# Reemplazamo la categoría 
+df_modelc$n_comuna <- df_modelc$comuna
+df_modelc$n_comuna <- as.character(df_modelc$n_comuna)
+df_modelc['n_comuna'] <- lapply(df_modelc['n_comuna'], function(x) replace(x,x %in% name_c_otro, 'OTRO'))
+```
+
+Finalmente, las nuevas categorías de la variable n_comuna quedan clasificadas correctamente. 
+
+```{r fig.width=8, fig.height=3, echo=FALSE}
+# Analizamos la frecuencia de las nuevas categorias de la variable n_barrio
+g_comunan <- data.frame(df_modelc %>% group_by(n_comuna) %>% summarise(n = n()) %>% arrange(desc(n)))
+
+# graficamos
+ggplot(g_comunan, aes(x=reorder(n_comuna, n), y=n)) + 
+  geom_bar(stat = "identity") +
+  labs(x = "Barrio", y = "freq") +
+  coord_flip() 
+```
+
+Por ende, una vez codificados correctamente las categorías. Es necesario eliminar las anteriores.
+
+```{r}
+# Eliminación de variables
+df_model_pre <- dplyr::select(df_modelc, -barrio, -comuna)
+head(df_model_pre, 3)
+```
+
+Ahora evaluaremos si existe una relación entre las variables *n_barrio* y *n_comuna*, usanla el test de independencia.
+  
+```{r}
+# Test de independencia
+tabla <- table(df_model_pre$n_barrio, df_model_pre$n_comuna)
+chisq.test(tabla)
+```
+
+Esta prueba nos indica que con un nivel de significancia del 5%, hay suficiente evidencia estadística para reachazar la hipótesis nula. Es decir, hay suficiente evidencia estadística para asegurar que el barrio y la comuna están relacionados significativamente. A continuación, veremos la importancia de las variables con respecto al precio aproximado ($), para definir que variable es más importante.   
+
+```{r fig.width=8, fig.height=3, echo=FALSE}
+ggplot(data = df_model_pre, aes(x = factor(n_comuna), y = price_aprox_usd)) +
+       stat_boxplot(geom = "errorbar", # Bigotes
+                    width = 0.2) +
+       geom_boxplot(fill = "#4271AE", colour = "#1F3552", # Colores
+                    alpha = 0.9, outlier.colour = "red") +
+       scale_y_continuous(name = "price_aprox_usd") +  # Etiqueta de la variable continua
+       scale_x_discrete(name = "Comuna") +        # Etiqueta de los grupos
+       theme(axis.line = element_line(colour = "black", size = 0.25)) +
+       coord_flip()
+```
+
+```{r fig.width=8, fig.height=3, echo=FALSE}
+ggplot(data = df_model_pre, aes(x = factor(n_barrio), y = price_aprox_usd)) +
+       stat_boxplot(geom = "errorbar", # Bigotes
+                    width = 0.2) +
+       geom_boxplot(fill = "#4271AE", colour = "#1F3552", # Colores
+                    alpha = 0.9, outlier.colour = "red") +
+       scale_y_continuous(name = "price_aprox_usd") +  # Etiqueta de la variable continua
+       scale_x_discrete(name = "Barrio") +        # Etiqueta de los grupos
+       theme(axis.line = element_line(colour = "black", size = 0.25)) + 
+       coord_flip()
+```
+
+De los siguientes gráficos, podemos apreciar que existe una mayor visibilidad del comportamiento del los barrios sobre los precios aproximados. Por ello, la variable comuna será retirada del análisis.  
+
+```{r}
+dfmodelamiento <- dplyr::select(df_model_pre, -n_comuna)
+head(dfmodelamiento, 3)
+```
+
+## Modelamiento predictivo 
+
+Luego del análisis de los datos, pasaremos a ajustar un modelo de regresión lineal múltiple para poder explicar el precio aproximado de los inmuebles. Pero antes realizaremos una partición de los datos parasu validación.
+
+```{r}
+set.seed(1998)
+indice <- caret::createDataPartition(dfmodelamiento$price_aprox_usd,times = 1, p = 0.85, list = F)
+
+# Dimensión de la data de entrenamiento
+dftrain <- dfmodelamiento[indice,]
+dim(dftrain)
+
+# Dimensión de la data de testeo
+dftest <- dfmodelamiento[-indice,]
+dim(dftest)
+```
+
+```{r}
+ModelF <- lm(price_aprox_usd ~ surface_total_in_m2 + price_usd_per_m2 + n_barrio , data = dftrain)
+summary(ModelF)
+```
+
+**Evaluamos la existencia de multicolinealidad**
+
+```{r}
+car::vif(ModelF)
+```
+
+Otra forma de medir la colinealidad entre las variables independientes del modelo es mediante el análisis del Factor de Inflación de la Varianza (VIF). Si los resultados obtenidos se encuentran entre 1 y 5, esto indica una correlación moderada entre las variables, pero pueden ser controlados. Por este motivo, se puede concluir la existencia de colinealidad entre las variables, pero estás pueden ser controladas debidamente.
+
+* Analizaremos si la variabilidad es constante (Homocedasticidad)
+
+```{r warning=FALSE, error=FALSE, message=FALSE, fig.width=8, fig.height=3, echo=FALSE}
+# Obtención de los residuos y los valores ajustados
+residuo <- residuals(ModelF)
+v_ajustado <- fitted(ModelF)
+
+# creamos la base para evaluar los errores
+reg_mult = data.frame(v_ajustado, residuo)
+
+# Graficamos
+ggplot(data = reg_mult, aes(x = v_ajustado, y = residuo)) +
+  geom_point(aes(color = residuo)) +
+  scale_color_gradient2(low = "blue3", mid = "grey", high = "red") +
+  geom_segment(aes(xend = v_ajustado, yend = 0), alpha = 0.2) +
+  geom_smooth(se = FALSE, color = "gold4") +
+  labs(title = "Distribución de los residuos", x = "Valores ajustados",
+       y = "Residuo") +
+  geom_hline(yintercept = 0) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5), legend.position = "none")
+```
+
+Gráficamente podemos observar que las observaciones de los residuos y los valores ajustados, siguen un ligero patrón. Por este motivo no se puede asegurar la aleatoriedad de los datos, es decir, la variabilidad de los datos no son constantes. Para, verificar si la variabilidad es o no constante usaremos la prueba de Breusch-Pagan con un nivel de significancia del 5%, determinaremos la prueba de hipótesis.   
+
+$H0: Los\hspace{0.2cm}errores\hspace{0.2cm}tienen\hspace{0.2cm}varianza\hspace{0.2cm}constante.$
+
+$H1: Los\hspace{0.2cm}errores\hspace{0.2cm}no\hspace{0.2cm}tienen\hspace{0.2cm}varianza\hspace{0.2cm}constante.$
+
+```{r}
+bptest(ModelF)
+```
+
+De la prueba Breusch-Pagan podemos concluir, con un nivel de significancia del 5% hay suficiente evidencia estadística para rechazar la hipótesis nula. Es decir, La variabilidad de los errores no es constante, por ello, no se cumple con el supuesto de homocedasticidad de los residuos.
+
+* Analizaremos si la distribución de los residuos se ajustan a una normal
+
+Para analizar la distribución de los residuos es necesario realizar un gráfico QQ-plot, este nos permitirá deducir si los residuos se ajustan a una distribución normal. 
+
+```{r fig.width=8, fig.height=4, echo=FALSE}
+qqnorm(residuo, main = "Gráfico QQ de los Residuos", col = 'steelblue')
+qqline(residuo, col = 'red', lwd = 1.5)
+```
+
+Del siguiente gráfico podemos inferir que los residuos no se ajustan a una distribución normal. Esto se debe a que la mayoría de los datos no están superpuestos en la recta. Sin embargo, hay grupos de datos que están alejados de la recta lo que indica que los datos tienen una ligera asimérica en la derecha e izquierda (colas pesadas). Para verificar que los residuos se ajustan o no a la normalidad de los datos usaremos la prueba de *Anderson - Darling*.
+
+$H0: Los\hspace{0.2cm}errores\hspace{0.2cm}siguen\hspace{0.2cm}una\hspace{0.2cm}distribución\hspace{0.2cm}normal.$
+
+$H1: Los\hspace{0.2cm}errores\hspace{0.2cm}no\hspace{0.2cm}se\hspace{0.2cm}ajustan\hspace{0.2cm}a\hspace{0.2cm}una\hspace{0.2cm}distribución\hspace{0.2cm}normal.$
+
+```{r}
+ad.test(residuo)
+```
+
+Del test de normalidad podemos concluir, con un nivel de significancia del 5% hay suficiente evidencia para rechazar la hipótesis nula. Por este motivo, los errores no se ajustan a una distribución normal, lo que implica que no cumple con la condición de la normalidad de los residuos.  
+
+Otro supuesto que debemos analizar es la autocorrelación de residuos.  
+
+```{r warning=FALSE, error=FALSE, message=FALSE, fig.width=8, fig.height=3, echo=FALSE}
+ggplot(data = reg_mult, aes(x = seq_along(residuo), y = residuo)) +
+  geom_point(aes(color = residuo)) +
+  scale_color_gradient2(low = "blue3", mid = "grey", high = "red") +
+  geom_line(size = 0.3) +
+  labs(title = "Distribución de los residuos", x = "index", y = "residuo") +
+  geom_hline(yintercept = 0) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5), legend.position = "none")
+```
+
+Graficamente, podemos deducir que existe una ligera tendencia que nos puede hacer sospechar de la existencia de la autocorrelación de residuos.
+
+Aplicamos el test de Durbin-Watson, para comprobar si existe autocorrelación de residuos. 
+
+H0: No existe autocorrelación en los residuos.
+
+H1: Existe autocorrelación en los residuos.
+
+```{r}
+dwtest(ModelF)
+```
+
+Con un nivel de significancia del 5%, concluimos que hay evidencia estadística para rechazar la hipótesis nula. Por lo tanto, los errores del modelo están autocorrelacionados. 
+
+# Representación de resultados
+
+## Representación geográfica de los resultados  
+
+Después de imputar los datos podemos mostralo para que los compradores puedan ubicarse más facilemente la propeidad que buscan.
+
+```{r message=FALSE, warning=FALSE, error=FALSE, fig.width=8, fig.height=3, echo=FALSE}
+# options(scipen = 999) # para evitar la anotación científica 
+
+#Cargando los datos de las comunas
+comunas <- st_read("../data/comunas.json")
+
+ggplot(data = comunas) +
+      geom_sf() +
+      geom_point(data= input_data_mapa,
+             aes(x=long, y = lat,  color = rooms),
+             stroke = F) +
+      scale_size_continuous(name = "Miles de Dólares") +
+      ggtitle( "Ubicación de  Dptos en las Comunas de Buenos Aires")
+```
+
+Al observar las 15 comunidades juntas no es muy legible la ubicación de las propiedades por ello sólo observaremos de una comunidad.
+
+En el siguiente gráfico extraeremos sólo los primeros 50 departamentos de la comunidad 2 y lo gráficaremos.
+
+```{r include=FALSE}
+comuna02 <- st_read("../data/comuna02.json")
+```
+
+```{r}
+# Para una mejor visualización de la ubicación sólo grafiacremos las tres primeras comunidades.
+data_mapa_comuna02 <- filter(input_data_mapa, comuna == 2)
+```
+
+Observamos un resumen de la cantidad de deparatmento por número de habitaciones.
+
+```{r echo=FALSE}
+
+table(data_mapa_comuna02$rooms)
+
+```
+
+En el siguiente gráfico extraeremos sólo los primeros 50 departamentos de la comunidad 2 y lo gráficaremos.
+
+```{r fig.width=8, fig.height=3, echo=FALSE}
+
+data_mapa_comuna02<-head(data_mapa_comuna02, 50)
+
+ggplot(data = comuna02) +
+  geom_sf() +
+  geom_point(data= data_mapa_comuna02, 
+             aes(x=long, y = lat, size = price_aprox_usd/1000, color = rooms), 
+             stroke = F ) +
+  scale_size_continuous(name = "Miles de Dólares") +
+  ggtitle( "Ubicación de Dptos en la Comuna 2")
+
+```
+
+Con este ejemplo graficamos sólo una proción de la información con lo cuál se puede mostrar que se puede generar la ubicación de los inmubeles de ínteres teniendo algunso criterios como: por número de depratamento, por precio de departamento y área que se busca.
+
+# Resolución del problema y conclusiones
+
+El modelo de regresión lineal múltiple no es considerada como una buena opción en este proyecto. Esto se debe a que no cumple con los supuestos necesarios para poder tener una consistencia en el modelo. Es así que vez que los errores no se ajustan a una distribución normal (p_value<0.05). Al igual que los supuesto de homocedasticidad y heterocedasticidad no cumplen con los suficientes requisitos para que puedan satisfacer dichos supuestos. Por este motivo, llegamos a la conclusión de que aplicar una regresión lineal múltiple en estos datos no es una opción viable, a menos que se puedan solucionar el problema con los supuestos. 
+
+Por otro lado, una vía para poder continuar el análisis es mediante la categorización de los precios aproximados y convertir el modelo de regresión en un modelo de clasificación. Esta transformación podría solucionar probablemente algunas métricas al igual que los supuestos.
+
+# Exportación del código en R y de los datos producidos
+
+El código en R esta incluido en este fichero con extensión rmd y tambien se puede descargar en GitHub desde la siguiente dirección:
+
+Los datos de salida se exportan mediante el siguiente comando y pueden ser descargados desde en GitHub desde la siguiente dirección:
+
+```{r}
+
+write.csv(input_data_mapa, file = "../data/datos_properati_out.csv")
+
+```
+
+# Tabla de contribuciones
+
+| Contribuciones | Firma 1 | Firma 2 |
+|----------------|---------|---------|
+| Investigación previa | Jose | Félix |
+| Redacción de las respuestas | Jose | Félix |
+| Desarrollo del código | Jose | Félix |
+| Participación en el video | Jose | Félix |
