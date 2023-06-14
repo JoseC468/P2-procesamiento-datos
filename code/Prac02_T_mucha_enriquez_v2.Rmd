@@ -841,6 +841,8 @@ Por otro lado, una vía para poder continuar el análisis es mediante la categor
 
 El código en R esta incluido en este fichero con extensión rmd y tambien se puede descargar en GitHub desde la siguiente dirección:
 
+https://github.com/JoseC468/P2-procesamiento-datos/tree/main/data
+
 Los datos de salida se exportan mediante el siguiente comando y pueden ser descargados desde en GitHub desde la siguiente dirección:
 
 ```{r}
