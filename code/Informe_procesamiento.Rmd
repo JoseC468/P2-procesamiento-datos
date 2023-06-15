@@ -851,6 +851,12 @@ write.csv(input_data_mapa, file = "../data/datos_properati_out.csv")
 
 ```
 
+# Video y GitHub
+
+Enlace de video: https://drive.google.com/drive/u/0/folders/1fgA_2djtjA2uxIb3Fd4C3jYgu_IEnjPW
+
+Enlace de GitHub: https://github.com/JoseC468/P2-procesamiento-datos
+
 # Tabla de contribuciones
 
 | Contribuciones | Firma 1 | Firma 2 |
