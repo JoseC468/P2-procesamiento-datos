@@ -26,5 +26,7 @@ Por cada inmueble se tendrá los datos siguientes:
 + comuna: comuna
 
 Origen de datos: Kaggle ( https://www.kaggle.com/datasets/gastonmichelotti/properati-data-set ).
+
 Enlace de video: 
+
 Enlace de GitHub: 
