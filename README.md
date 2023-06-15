@@ -29,4 +29,4 @@ Origen de datos: Kaggle ( https://www.kaggle.com/datasets/gastonmichelotti/prope
 
 Enlace de video: 
 
-Enlace de GitHub: 
+Enlace de GitHub: https://github.com/JoseC468/P2-procesamiento-datos
